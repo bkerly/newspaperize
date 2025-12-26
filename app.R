@@ -349,10 +349,9 @@ server <- function(input, output, session) {
                                 local_img <- download_image(piece$content, img_dir)
                                 if(!is.null(local_img) && file.exists(local_img)) {
                                     rel_path <- normalizePath(local_img)
-                                    # Use smaller width for 3 columns
-                                    img_width <- if(input$columns == "3") "0.28\\columnwidth" else "0.45\\columnwidth"
+                                    # Use linewidth for full column width
                                     rmd_content <- paste0(rmd_content, 
-                                                          "\\includegraphics[width=", img_width, "]{", rel_path, "}\n\n")
+                                                          "\\noindent\\includegraphics[width=\\linewidth]{", rel_path, "}\n\n")
                                     img_count <- img_count + 1
                                 }
                             }
