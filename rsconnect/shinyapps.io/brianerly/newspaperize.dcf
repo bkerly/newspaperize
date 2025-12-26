@@ -5,7 +5,7 @@ account: brianerly
 server: shinyapps.io
 hostUrl: https://api.shinyapps.io/v1
 appId: 16354870
-bundleId: 11370542
+bundleId: 11370639
 url: https://brianerly.shinyapps.io/newspaperize/
 version: 1
 asMultiple: FALSE
