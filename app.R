@@ -7,7 +7,10 @@ library(bslib)
 
 ui <- page_sidebar(
     theme = bs_theme(bootswatch = "cosmo"),
-    title = "Mini Newspaper Generator",
+    title = tags$span(
+        tags$span("📰", style = "font-size: 1.2em; margin-right: 8px;"),
+        "Mini Newspaper Generator"
+    ),
     
     sidebar = sidebar(
         width = 350,
@@ -24,7 +27,12 @@ ui <- page_sidebar(
     ),
     
     card(
-        card_header("Preview & Diagnostics"),
+        card_header(
+            tags$span(
+                tags$span("📋", style = "margin-right: 8px;"),
+                "Preview & Diagnostics"
+            )
+        ),
         verbatimTextOutput("debug_info"),
         hr(),
         uiOutput("preview")
