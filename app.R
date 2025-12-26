@@ -51,8 +51,10 @@ server <- function(input, output, session) {
         text <- gsub("[\u2022\u2023\u25E6\u2043\u2219]", "-", text)  # Bullets
         
         # Escape LaTeX special characters (order matters!)
-        text <- gsub("\\\\", "\\\\textbackslash{}", text)
-        text <- gsub("([&%$#_{}])", "\\\\\\1", text)
+        # Do # first before it gets confused with other escapes
+        text <- gsub("#", "\\\\#", text)
+        text <- gsub("\\\\(?!#)", "\\\\textbackslash{}", text, perl = TRUE)
+        text <- gsub("([&%$_{}])", "\\\\\\1", text)
         text <- gsub("~", "\\\\textasciitilde{}", text)
         text <- gsub("\\^", "\\\\textasciicircum{}", text)
         text <- gsub("<", "\\\\textless{}", text)
@@ -85,7 +87,7 @@ server <- function(input, output, session) {
         })
     }
     
-    # Function to extract article content
+    # Function to extract article content with image positions
     extract_article <- function(url) {
         tryCatch({
             # Fetch with proper headers
@@ -97,6 +99,7 @@ server <- function(input, output, session) {
                 return(list(
                     title = "Error",
                     content = paste("HTTP error:", status_code(response)),
+                    content_with_images = "",
                     images = character(0),
                     url = url,
                     success = FALSE
@@ -114,33 +117,63 @@ server <- function(input, output, session) {
             
             if(is.na(title) || title == "") title <- "Untitled Article"
             
-            # Get ALL text content from the body
-            all_text <- page %>%
-                html_nodes("body") %>%
-                html_text() %>%
-                trimws()
-            
-            # Now try structured extraction - get all h2, h3, h4, h5, h6, and p tags
+            # Get main content area nodes (includes both text and images in order)
             content_nodes <- page %>%
-                html_nodes("h2, h3, h4, h5, h6, p")
+                html_nodes("article *, main *, .post-content *, .entry-content *")
             
-            content_pieces <- c()
+            content_pieces <- list()
+            image_urls <- c()
+            
             for(node in content_nodes) {
-                text <- html_text(node) %>% trimws()
+                node_name <- html_name(node)
                 
-                # Skip very short text, navigation, and common footer elements
-                if(nchar(text) < 10) next
-                if(grepl("^(Share|Subscribe|Sign in|Comments?|Restacks?|Top|Latest|Previous|Ready for more)", text)) next
-                if(grepl("twitter\\.com|facebook\\.com|@", text)) next
-                if(grepl("^©|Privacy|Terms|Collection notice", text)) next
+                # Handle images
+                if(node_name == "img") {
+                    img_src <- html_attr(node, "src")
+                    if(!is.na(img_src) && !grepl("w_80|h_80|32x32|icon|logo|avatar", img_src, ignore.case = TRUE)) {
+                        # Convert to absolute URL
+                        if(grepl("^http", img_src)) {
+                            img_url <- img_src
+                        } else if(grepl("^//", img_src)) {
+                            img_url <- paste0("https:", img_src)
+                        } else {
+                            img_url <- xml2::url_absolute(img_src, url)
+                        }
+                        
+                        # Add image marker
+                        content_pieces[[length(content_pieces) + 1]] <- list(
+                            type = "image",
+                            content = img_url
+                        )
+                        image_urls <- c(image_urls, img_url)
+                    }
+                    next
+                }
                 
-                content_pieces <- c(content_pieces, text)
+                # Handle text content
+                if(node_name %in% c("h2", "h3", "h4", "h5", "h6", "p")) {
+                    text <- html_text(node) %>% trimws()
+                    
+                    # Skip very short text, navigation, and common footer elements
+                    if(nchar(text) < 10) next
+                    if(grepl("^(Share|Subscribe|Sign in|Comments?|Restacks?|Top|Latest|Previous|Ready for more)", text)) next
+                    if(grepl("twitter\\.com|facebook\\.com|@", text)) next
+                    if(grepl("^©|Privacy|Terms|Collection notice", text)) next
+                    
+                    content_pieces[[length(content_pieces) + 1]] <- list(
+                        type = "text",
+                        content = text
+                    )
+                }
             }
             
-            # Join with paragraph breaks
-            content <- paste(content_pieces, collapse = "\n\n")
+            # Build content string (text only for preview)
+            text_only <- sapply(content_pieces, function(piece) {
+                if(piece$type == "text") piece$content else ""
+            })
+            content <- paste(text_only[text_only != ""], collapse = "\n\n")
             
-            # Fallback: if we got very little, just grab all p tags
+            # Fallback if we got very little
             if(nchar(content) < 500) {
                 content <- page %>%
                     html_nodes("p") %>%
@@ -149,33 +182,11 @@ server <- function(input, output, session) {
                     paste(collapse = "\n\n")
             }
             
-            # Get images
-            images <- page %>%
-                html_nodes("img") %>%
-                html_attr("src") %>%
-                head(3)
-            
-            # Filter and convert image URLs
-            if(length(images) > 0) {
-                images <- sapply(images, function(img) {
-                    if(is.na(img)) return(NA)
-                    if(grepl("w_80|h_80|32x32|icon|logo|avatar", img, ignore.case = TRUE)) return(NA)
-                    
-                    if(grepl("^http", img)) {
-                        img
-                    } else if(grepl("^//", img)) {
-                        paste0("https:", img)
-                    } else {
-                        xml2::url_absolute(img, url)
-                    }
-                })
-                images <- images[!is.na(images)]
-            }
-            
             list(
                 title = title,
                 content = substr(content, 1, 60000),
-                images = images,
+                content_pieces = content_pieces,  # Preserve structure with images
+                images = head(image_urls, 10),  # Limit total images
                 url = url,
                 success = TRUE,
                 char_count = nchar(content),
@@ -185,6 +196,7 @@ server <- function(input, output, session) {
             list(
                 title = "Error",
                 content = paste("Failed to extract article:", e$message),
+                content_pieces = list(),
                 images = character(0),
                 url = url,
                 success = FALSE,
@@ -291,11 +303,16 @@ server <- function(input, output, session) {
                 "  - \\pagestyle{fancy}\n",
                 "  - \\setlength{\\columnsep}{15pt}\n",
                 "  - \\usepackage[utf8]{inputenc}\n",
-                "  - \\usepackage{ragged2e}\n",
-                "  - \\RaggedRight\n",
+                if(input$columns == "2") "  - \\usepackage{ragged2e}\n" else "",
                 "---\n\n"
             )
             
+            # Only use RaggedRight for 2-column layout
+            if(input$columns == "2") {
+                rmd_content <- paste0(rmd_content, "\\RaggedRight\n\n")
+            }
+            
+            # Start 3-column environment if needed
             if(input$columns == "3") {
                 rmd_content <- paste0(rmd_content, "\\begin{multicols}{3}\n\n")
             }
@@ -304,42 +321,67 @@ server <- function(input, output, session) {
             for(art in articles()) {
                 if(art$success && nchar(art$content) > 0) {
                     clean_title <- clean_latex(art$title)
-                    clean_content <- clean_latex(art$content)
                     
-                    # Skip if cleaning resulted in empty content
-                    if(nchar(clean_content) == 0) next
-                    
-                    # Ensure paragraph breaks are preserved
-                    paragraphs <- strsplit(clean_content, "\n\n")[[1]]
-                    paragraphs <- paragraphs[nchar(trimws(paragraphs)) > 0]
-                    
-                    # Limit paragraph length to avoid overfull hbox errors
-                    paragraphs <- sapply(paragraphs, function(p) {
-                        if(nchar(p) > 5000) {
-                            substr(p, 1, 5000)
-                        } else {
-                            p
-                        }
-                    })
-                    
-                    formatted_content <- paste(paragraphs, collapse = "\n\n")
-                    
-                    rmd_content <- paste0(rmd_content, "# ", clean_title, "\n\n")
-                    rmd_content <- paste0(rmd_content, formatted_content, "\n\n")
-                    
-                    # Add images if enabled
-                    if(input$include_images && length(art$images) > 0) {
-                        for(img_url in art$images) {
-                            local_img <- download_image(img_url, img_dir)
-                            if(!is.null(local_img) && file.exists(local_img)) {
-                                rel_path <- normalizePath(local_img)
-                                rmd_content <- paste0(rmd_content, "![](", rel_path, "){width=40%}\n\n")
-                            }
-                        }
+                    # For 3-column, use LaTeX subsection directly to avoid markdown parsing issues
+                    if(input$columns == "3") {
+                        rmd_content <- paste0(rmd_content, "\\subsection*{", clean_title, "}\n\n")
+                    } else {
+                        rmd_content <- paste0(rmd_content, "# ", clean_title, "\n\n")
                     }
                     
-                    rmd_content <- paste0(rmd_content, "\\vspace{0.3cm}\n\n")
-                    rmd_content <- paste0(rmd_content, "\\hrulefill\n\n")
+                    # If images are enabled and we have structured content, use it
+                    if(input$include_images && length(art$content_pieces) > 0) {
+                        char_count <- 0
+                        img_count <- 0
+                        max_chars <- 60000
+                        max_imgs <- 5
+                        
+                        for(piece in art$content_pieces) {
+                            if(char_count >= max_chars) break
+                            
+                            if(piece$type == "text") {
+                                clean_text <- clean_latex(piece$content)
+                                if(nchar(clean_text) > 0) {
+                                    rmd_content <- paste0(rmd_content, clean_text, "\n\n")
+                                    char_count <- char_count + nchar(clean_text)
+                                }
+                            } else if(piece$type == "image" && img_count < max_imgs) {
+                                local_img <- download_image(piece$content, img_dir)
+                                if(!is.null(local_img) && file.exists(local_img)) {
+                                    rel_path <- normalizePath(local_img)
+                                    # Use smaller width for 3 columns
+                                    img_width <- if(input$columns == "3") "0.28\\columnwidth" else "0.45\\columnwidth"
+                                    rmd_content <- paste0(rmd_content, 
+                                                          "\\includegraphics[width=", img_width, "]{", rel_path, "}\n\n")
+                                    img_count <- img_count + 1
+                                }
+                            }
+                        }
+                    } else {
+                        # No images or structured content not available - use plain text
+                        clean_content <- clean_latex(art$content)
+                        
+                        if(nchar(clean_content) == 0) next
+                        
+                        paragraphs <- strsplit(clean_content, "\n\n")[[1]]
+                        paragraphs <- paragraphs[nchar(trimws(paragraphs)) > 0]
+                        
+                        paragraphs <- sapply(paragraphs, function(p) {
+                            if(nchar(p) > 5000) substr(p, 1, 5000) else p
+                        })
+                        
+                        formatted_content <- paste(paragraphs, collapse = "\n\n")
+                        rmd_content <- paste0(rmd_content, formatted_content, "\n\n")
+                    }
+                    
+                    rmd_content <- paste0(rmd_content, "\\vspace{0.2cm}\n\n")
+                    
+                    # Only add hrule for 2-column layout (can cause issues in 3-column)
+                    if(input$columns == "2") {
+                        rmd_content <- paste0(rmd_content, "\\hrulefill\n\n")
+                    } else {
+                        rmd_content <- paste0(rmd_content, "\\vspace{0.1cm}\n\n")
+                    }
                 }
             }
             
